@@ -243,7 +243,7 @@ $buttonShowLog = New-Object System.Windows.Forms.Button
 $buttonShowLog.Text = "Show logfile"
 $buttonShowLog.Top = 90
 $buttonShowLog.Left = 50
-$buttonShowLog.Add_Click({ Start-Process C:\Users\PEMU\Repositories\Powershell\cobolinstaller\logfile.txt })
+$buttonShowLog.Add_Click({ Start-Process C:\Users\me\Repositories\Powershell\cobolinstaller\logfile.txt })
 $buttonShowLog.Visible = $false
 $form.Controls.Add($buttonShowLog)
 
