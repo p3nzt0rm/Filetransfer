@@ -1,15 +1,10 @@
 Add-Type -AssemblyName System.Windows.Forms
 
-$servers = @( # Name <=> IP-adress
-    [PSCustomObject]@{ Os = "Windows"; Name = "1.2.3.4"; Path = "C:\destination\" },
-    [PSCustomObject]@{ Os = "Linux"; Name = "5.6.7.8"; Path = "/destination/" }
-)
-
-
 # Get path oft this script and the logfile
 $scriptPath = $MyInvocation.MyCommand.Path
 $scriptDirectory = [System.IO.Path]::GetDirectoryName($scriptPath)
 $logFilePath = Join-Path -Path $scriptDirectory -ChildPath "logfile.txt"
+$serverListFilePath = Join-Path -Path $scriptDirectory -ChildPath "serverlist.csv"
 
 function Write-Log {
     param (
@@ -23,9 +18,58 @@ function Write-Log {
 function Get-FileDialog {
     $OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
     $OpenFileDialog.InitialDirectory = [Environment]::GetFolderPath('Desktop')
-    # $OpenFileDialog.Filter = "Textfiles (*.txt)|*.txt"
+    #$OpenFileDialog.Filter = "XML files (*.xml)|*.xml"
     $OpenFileDialog.ShowDialog() | Out-Null
     return $OpenFileDialog.FileName
+}
+
+# if no serverlist.csv, a new on with default value is created 
+function Create-DefaultServerList {
+    $defaultContent = @"
+"OS","Name","Path"
+"@
+
+    # Write the default values to the new CSV file
+    $defaultContent | Set-Content -Path $serverListFilePath
+    Write-Log "Server list file created with default values."
+}
+
+function Load-ServerList {
+    if (-not (Test-Path $serverListFilePath)) {
+        Create-DefaultServerList
+    }
+
+    $dataTable = New-Object System.Data.DataTable
+    $dataTable.Columns.Add("OS")
+    $dataTable.Columns.Add("Name")
+    $dataTable.Columns.Add("Path")
+
+    $serverList = Import-Csv -Path $serverListFilePath
+    foreach ($server in $serverList) {
+        $row = $dataTable.NewRow()
+        $row.OS = $server.OS
+        $row.Name = $server.Name
+        $row.Path = $server.Path
+        $dataTable.Rows.Add($row)
+    }
+
+    $dataGridView.DataSource = $dataTable
+}
+
+function Save-ServerList {
+    $serverListFile = $serverListFilePath
+    $dataTable = $dataGridView.DataSource
+    $serverList = @()
+
+    foreach ($row in $dataTable.Rows) {
+        $serverList += [PSCustomObject]@{
+            OS = $row.OS
+            Name = $row.Name
+            Path         = $row.Path
+        }
+    }
+
+    $serverList | Export-Csv -Path $serverListFile -NoTypeInformation
 }
 
 function Test-WindowsCredentials {
@@ -61,7 +105,7 @@ function Copy-LicenseToWindows {
                 $serverName,
                 $destinationPath
             )
-            Write-Log "License file copied to $serverName $destinationPath"
+            Write-Log "License file successfully copied to $serverName $destinationPath"
         } -ArgumentList $destinationPath
         Remove-PSSession -Session $session
     }
@@ -91,11 +135,15 @@ function Copy-LicenseToLinux {
         Write-Log "ERROR. Failed to copy license file to $serverName $destinationPath :  $_"
     }
     else {
-        Write-Log "License file copied to $serverName $destinationPath"
+        Write-Log "License file successfully copied to $serverName $destinationPath"
     }    
 }
 
 function Copy-Loop {
+    if (-not (Test-Path $serverListFilePath)) {
+        Create-DefaultServerList
+    }
+
     Write-Log "Process started"
     $licensePath = $pathTextBox.Text
 
@@ -104,41 +152,37 @@ function Copy-Loop {
         exit
     }
     Show_Progress_Screen
-    $credential = $Host.ui.PromptForCredential("Authorization required", "Please sign in with Administrator rights.", "", "NetBiosUserName")
 
-    # $credentialValid = $false
-    # while (-not $credentialValid) {
-    #     $credential = $Host.ui.PromptForCredential("Authorization required", "Please sign in with Administrator rights.", "", "NetBiosUserName")
-    #     if ($null -eq $credential) {
-    #         Write-Log "Credential prompt canceled by user. Process ended`n"
-    #         Show_Start_Screen
-    #         return
-    #     }
-    #     $credentialValid = Test-WindowsCredentials -serverName $servers[0].Name -credential $credential
-    #     if (-not $credentialValid) {
-    #         [System.Windows.Forms.MessageBox]::Show("Invalid credentials. Please try again.")
-    #     }
-    # }
+    $credentialValid = $false
+    while (-not $credentialValid) {
+        $credential = $Host.ui.PromptForCredential("Authorization required", "Please sign in with Administrator rights.", "", "NetBiosUserName")
+        if ($null -eq $credential) {
+            Write-Log "Credential prompt canceled by user. Process ended`n"
+            Show_Start_Screen
+            return
+        }
+        $credentialValid = Test-WindowsCredentials -serverName $servers[0].Name -credential $credential
+        if (-not $credentialValid) {
+            [System.Windows.Forms.MessageBox]::Show("Invalid credentials. Please try again.")
+        }
+    }
 
     $progressBar.Visible = $true
     $index = 0
-    $allServers = $servers.Count
+    $serverList = Import-Csv -Path $serverListFilePath
+    $allServers = $serverList.Count
     $global:errorCount = 0 # 'global' is needed to get the error count from the functions
     
-    foreach ($server in $servers) {
+    foreach ($server in $serverList) {
 
         $label.Text = "Copying files to " + $server.Name + $server.Path + "`n($index / $allServers)"
         Start-Sleep -Milliseconds 200 # Delay to prevent the GUI to get stuck
 
-        if ($server.Os -eq "Windows") {
+        if ($server.OS -eq "Windows") {
             Copy-LicenseToWindows  -licensePath $licensePath -serverName $server.Name -destinationPath $server.Path -credential $credential
         }
-        elseif ($server.Os -eq "Linux") {
-            if ($server.Name -eq "server22") {
-                $password = "abc"
-            }
-            else {
-                $password = "xyz"
+        elseif ($server.OS -eq "Linux") {
+                $password = "root"
             }
 
             Copy-LicenseToLinux -licensePath $licensePath -serverName $server.Name -destinationPath $server.Path -username "quser" -password $password
@@ -166,6 +210,7 @@ function Show_End_Screen {
     $pathTextBox.Visible = $false
     $progressBar.Visible = $false
     $progressLabel.Visible = $false
+    $buttonCancel.Location = "250,90"
 }
 
 function Show_Progress_Screen {
@@ -175,6 +220,7 @@ function Show_Progress_Screen {
     $pathTextBox.Visible = $false
     $buttonStart.Visible = $false
     $buttonCancel.Visible = $false
+    $buttonServers.Visible = $false
     $progressLabel.Visible = $true
 }
 
@@ -184,6 +230,7 @@ function Show_Start_Screen {
     $buttonCancel.Visible = $true
     $buttonShowLog.Visible = $false
     $buttonSelect.Visible = $true
+    $buttonServers.Visible = $true
     $pathTextBox.Visible = $true
     $progressBar.Visible = $false
     $progressLabel.Visible = $false
@@ -193,6 +240,7 @@ function Show_Start_Screen {
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "COBOL-IT License Installer"
 $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
+$form.MaximizeBox = $false;
 $form.Width = 500
 $form.Height = 200
 
@@ -205,48 +253,60 @@ $form.Controls.Add($label)
 
 $pathTextBox = New-Object System.Windows.Forms.TextBox
 $pathTextBox.Size = '300,23'
-$pathTextBox.Location = '20,60'
+$pathTextBox.Location = '20,64'
 $pathTextBox.ReadOnly = $true
 $form.Controls.Add($pathTextBox)
 
 $buttonSelect = New-Object System.Windows.Forms.Button
 $buttonSelect.Text = "Select"
 $buttonSelect.Location = '330,60'
+$buttonSelect.Size = "80,30"
 $buttonSelect.Add_Click({ 
-        $pathTextBox.Text = Get-FileDialog
-    })
+    $pathTextBox.Text = Get-FileDialog
+})
 $form.Controls.Add($buttonSelect)
 
 $buttonStart = New-Object System.Windows.Forms.Button
 $buttonStart.Text = "Start"
-$buttonStart.Top = 90
-$buttonStart.Left = 50
+$buttonStart.Location = "30,110"
+$buttonStart.Size = "80,30"
 $buttonStart.Enabled = $false
 $buttonStart.Add_Click({ 
-        $label.Visible = $false
-        Copy-Loop
-    })
+    $label.Visible = $false
+    Copy-Loop
+})
 $form.Controls.Add($buttonStart)
+
+$buttonServers = New-Object System.Windows.Forms.Button
+$buttonServers.Text = "Edit Servers"
+$buttonServers.Location = "130,110"
+$buttonServers.Size = "80,30"
+$buttonServers.Add_Click({
+    Load-ServerList
+    $settingsForm.ShowDialog()
+})
+$form.Controls.Add($buttonServers)
 
 $buttonCancel = New-Object System.Windows.Forms.Button
 $buttonCancel.Text = "Abort"
-$buttonCancel.Top = 90
-$buttonCancel.Left = 150
+$buttonCancel.Location = "330,110"
+$buttonCancel.Size = "80,30"
 $buttonCancel.Add_Click({ 
-        $terminateScript = $true 
-        $form.Close()
-        return $terminateScript 
-    })
+    $terminateScript = $true 
+    $form.Close()
+    return $terminateScript 
+})
 $form.Controls.Add($buttonCancel)
 
 $buttonShowLog = New-Object System.Windows.Forms.Button
 $buttonShowLog.Text = "Show logfile"
-$buttonShowLog.Top = 90
-$buttonShowLog.Left = 50
-$buttonShowLog.Add_Click({ Start-Process C:\Users\me\Repositories\Powershell\cobolinstaller\logfile.txt })
+$buttonShowLog.Location = "50,90"
+$buttonShowLog.Size = "80,30"
+$buttonShowLog.Add_Click({ Start-Process $logFilePath })
 $buttonShowLog.Visible = $false
 $form.Controls.Add($buttonShowLog)
 
+#Progress Bar
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Location = New-Object System.Drawing.Point(35, 60)
 $progressBar.Size = New-Object System.Drawing.Size(280, 20)
@@ -259,18 +319,70 @@ $progressLabel.AutoSize = $true
 $progressLabel.Visible = $false
 $form.Controls.Add($progressLabel)
 
-#Sets the starting position of the form at run time.
-$CenterScreen = [System.Windows.Forms.FormStartPosition]::CenterScreen;
-$form.StartPosition = $CenterScreen;
+# serverliste bearbeiten
+$settingsForm = New-Object System.Windows.Forms.Form
+$settingsForm.Text = "Server Settings"
+$settingsForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
+$settingsForm.MaximizeBox = $false;
+$settingsForm.Width = 580
+$settingsForm.Height = 580
 
-#Checks if there is a path
+$panelServerList = New-Object System.Windows.Forms.Panel
+$panelServerList.Size = New-Object System.Drawing.Size(560, 460)
+$panelServerList.Location = New-Object System.Drawing.Point(10, 20)
+$settingsForm.Controls.Add($panelServerList)
+
+$dataGridView = New-Object System.Windows.Forms.DataGridView
+$dataGridView.Size = New-Object System.Drawing.Size(530, 450)
+$dataGridView.Location = New-Object System.Drawing.Point(10, 10)
+$dataGridView.AutoGenerateColumns = $true
+$dataGridView.AutoSizeColumnsMode = 'AllCells'
+$dataGridView.AllowUserToAddRows = $true
+$dataGridView.AllowUserToDeleteRows = $true
+$panelServerList.Controls.Add($dataGridView)
+
+$buttonRemoveServer = New-Object System.Windows.Forms.Button
+$buttonRemoveServer.Text = "Remove Selected"
+$buttonRemoveServer.Size = New-Object System.Drawing.Size(120, 30)
+$buttonRemoveServer.Location = New-Object System.Drawing.Point(250, 495)
+$buttonRemoveServer.Add_Click({
+    if ($dataGridView.SelectedRows.Count -gt 0) {
+        $dataGridView.Rows.Remove($dataGridView.SelectedRows[0])
+    }
+})
+
+$settingsForm.Controls.Add($buttonRemoveServer)
+$buttonSaveServerList = New-Object System.Windows.Forms.Button
+$buttonSaveServerList.Text = "Save"
+$buttonSaveServerList.Size = New-Object System.Drawing.Size(80, 30)
+$buttonSaveServerList.Location = New-Object System.Drawing.Point(380, 495)
+$buttonSaveServerList.Add_Click({
+    Save-ServerList
+})
+$settingsForm.Controls.Add($buttonSaveServerList)
+
+$buttonExitServerlist = New-Object System.Windows.Forms.Button
+$buttonExitServerlist.Text = "Exit"
+$buttonExitServerlist.Size = New-Object System.Drawing.Size(80, 30)
+$buttonExitServerlist.Location = New-Object System.Drawing.Point(470, 495)
+$buttonExitServerlist.Add_Click({
+    $settingsForm.Close()
+})
+$settingsForm.Controls.Add($buttonExitServerlist)
+
+
+# Sets the starting position of the form at run time.
+$CenterScreen = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$form.StartPosition = $CenterScreen
+$settingsForm.StartPosition = $CenterScreen
+
+# Checks if there is a path
 $pathTextBox.Add_TextChanged({
-        if ($pathTextBox.TextLength -eq 0) {
-            $buttonStart.Enabled = $false
-        }
-        else {
-            $buttonStart.Enabled = $true
-        }
-    })
+    if ($pathTextBox.TextLength -eq 0) {
+        $buttonStart.Enabled = $false
+    } else {
+        $buttonStart.Enabled = $true
+    }
+})
 
 $form.ShowDialog()
